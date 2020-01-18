@@ -9,6 +9,7 @@ open WebSharper.UI.Server
 type EndPoint =
     | [<EndPoint "GET /">] Home
     | [<EndPoint "GET /blog">] Article of slug:string
+    | [<EndPoint "GET /categories">] Categories 
     | [<EndPoint "GET /category">] Category of string
     | [<EndPoint "GET /refresh">] Refresh
 
@@ -109,6 +110,12 @@ module Site =
             Categories: string list
         }
 
+    [<RequireQualifiedAccess>]
+    type MenuPages = 
+        | Home
+        | Latest of Map<string, Article>
+        | Categories
+
     let Articles() : Map<string, Article> =
         let folder = Path.Combine (__SOURCE_DIRECTORY__, @"..\hosted\posts")
         if Directory.Exists folder then
@@ -160,9 +167,11 @@ module Site =
             |> Map.toSeq
             |> Seq.truncate 5
             |> Map.ofSeq
+
         [
-            "Home", "/", Map.empty
-            "Latest", "#", latest
+            "Home", "/", MenuPages.Home
+            "Latest", "#", MenuPages.Latest latest
+            "Categories", "/categories", MenuPages.Categories
         ]
 
     let private head() =
@@ -184,38 +193,46 @@ module Site =
                 | Some t -> t + " | "
             )
             .TopMenu(Menu articles |> List.map (function
-                | text, url, map when Map.isEmpty map ->
-                    MainTemplate.TopMenuItem()
-                        .Text(text)
-                        .Url(url)
-                        .Doc()
-                | text, _, children ->
-                    let items =
-                        children
-                        |> Map.toList
-                        |> List.sortByDescending (fun (key, item) -> item.Date)
-                        |> List.map (fun (key, item) ->
-                            MainTemplate.TopMenuDropdownItem()
-                                .Text(item.Title)
-                                .Url(item.Url)
-                                .Doc())
-                    MainTemplate.TopMenuItemWithDropdown()
-                        .Text(text)
-                        .DropdownItems(items)
-                        .Doc()
+                | text, url, page ->
+                    match page with
+                    | MenuPages.Home ->
+                        MainTemplate.TopMenuItem()
+                            .Text(text)
+                            .Url(url)
+                            .Doc()
+                    | MenuPages.Latest children ->
+                        let items =
+                            children
+                            |> Map.toList
+                            |> List.sortByDescending (fun (key, item) -> item.Date)
+                            |> List.map (fun (key, item) ->
+                                 MainTemplate.TopMenuDropdownItem()
+                                    .Text(item.Title)
+                                    .Url(item.Url)
+                                    .Doc())
+                        MainTemplate.TopMenuItemWithDropdown()
+                            .Text(text)
+                            .DropdownItems(items)
+                            .Doc()
+                    | MenuPages.Categories -> 
+                        MainTemplate.TopMenuItem()
+                            .Text(text)
+                            .Url(url)
+                            .Doc()
             ))
             .DrawerMenu(Menu articles |> List.map (fun (text, url, children) ->
                 MainTemplate.DrawerMenuItem()
                     .Text(text)
                     .Url(url)
                     .Children(
-                        match url with
-                        | "/blog" ->
+                        match children with
+                        | MenuPages.Latest articles ->
                             ul []
-                                (children
+                                (articles
                                 |> Map.toList
-                                |> List.sortByDescending (fun (_, item) -> item.Date)
-                                |> List.map (fun (_, item) ->
+                                |> List.map snd
+                                |> List.sortByDescending (fun item -> item.Date)
+                                |> List.map (fun item ->
                                     MainTemplate.DrawerMenuItem()
                                         .Text(item.Title)
                                         .Url(item.Url)
@@ -349,6 +366,24 @@ module Site =
                     )
                     .Doc()
                 |> Page None false !articles
+            | Categories ->
+                MainTemplate.Categories()
+                    .Categories(
+                        !articles
+                        |> Map.toList
+                        |> List.map snd
+                        |> List.collect (fun article -> article.Categories)
+                        |> Set.ofList
+                        |> Set.toList
+                        |> List.map (fun category ->
+                            MainTemplate.Category()
+                                .Name(category)
+                                .Url(Urls.CATEGORY category)
+                                .Doc()
+                        )
+                    )
+                    .Doc()
+                |> Page None false !articles
             | Refresh ->
                 // Reload the article cache
                 articles := Articles()
@@ -361,20 +396,22 @@ type Website() =
 
     interface IWebsite<EndPoint> with
         member this.Sitelet = Site.Main articles
-        member this.Actions = [
-            Home
-            for (slug, _) in Map.toList !articles do
-                Article slug
-            for category in
+        member this.Actions = 
+            let categories =
                 !articles
                 |> Map.toList
                 |> List.map snd
                 |> List.collect (fun article -> article.Categories)
                 |> Set.ofList
                 |> Set.toList
-                do
+            [
+                Home
+                for (slug, _) in Map.toList !articles do
+                    Article slug
+                for category in categories do
                     Category category
-        ]
+                Categories
+            ]
 
 [<assembly: Website(typeof<Website>)>]
 do ()
